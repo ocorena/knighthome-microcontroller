@@ -9,7 +9,7 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 
 //local device ID, characters 1 and 2 are the type of device, the remaining characters are the
 //unique device identifyer
-char LdeviceID[] = "010001";
+char LdeviceID[] = "000001";
 
 //00 wall switch
 //01 wall outlet
@@ -36,15 +36,21 @@ int Rstate = 0;
 
 int Rstate2 = 0;
 
+//was button pushed?
+int buttonPushed = 0;
+
+
 
 int Relay0 = D0;
 int Relay1 = D3;
 int LED = D7;
-
 int analogPin0 = A0;
 
+int buttonPin = D7;
 
 
+
+//time until reconnect
 int resetTime = 0;
 
 
@@ -186,8 +192,30 @@ void dataSend(char *action, char *state_Name, double state_Type){
     int i = 0;
     int j = 0;
 
+    //send wall switch state
+    if(state_Type == -100)
+    {
+        if(Rstate == 0)
+        {
+            state_Value[0] == 'f';
+            state_Value[1] == 'a';
+            state_Value[2] == 'l';
+            state_Value[3] == 's';
+            state_Value[4] == 'e';
+        }
+        else if(Rstate == 1)
+        {
+            state_Value[0] == 't';
+            state_Value[0] == 'r';
+            state_Value[0] == 'u';
+            state_Value[0] == 'e';
+        }
+    }
+
+
+
     //power monitor data
-    if(state_Type >= 0)
+    else if(state_Type >= 0)
     {
         char temp_Value[10];
         int temp_Type = state_Type * 100;
@@ -467,7 +495,7 @@ void wallSwitch()
 
     char message[1024] = "";
 
-    if(client.available())
+    if(client.available() && (buttonPushed == 0))
     {
         while(inChar != '\n')
         {
@@ -515,8 +543,60 @@ void wallSwitch()
         resetTime = millis();
     }
 
-    //possibly add power monitoring
+
+    if(buttonPushed == 1)
+    {
+        dataSend("set","enabled",-100);
+        buttonPushed = 0;
+
+    }
+
+
+
+
+    unsigned long currentMillis = millis();
+
+        double Irms = emon1.calcIrms(1480);  // Calculate Irms
+        //Serial.println(Irms);
+        double watts = (Irms*voltage);
+        sum = sum + watts;
+        count = count + 1;
+        if ((unsigned long)(currentMillis - prevMinute) < minuteInterval){
+        return;
+        }
+        else{
+            average = sum/count;
+            Serial.print(" =");
+            Serial.println(average);
+            dataSend("stat", "power_usage", average);
+            average = 0.0;
+            sum = 0.0;
+            count = 0;
+            prevMinute = currentMillis;
+        }
+        prevSecond = currentMillis;
+
 }
+
+
+
+void switchButton()
+{
+    if(Rstate == 0)
+    {
+        Rstate == 1;
+        digitalWrite(Relay0,LOW);
+    }
+    else if(Rstate == 1)
+    {
+        Rstate == 0;
+        digitalWrite(Relay0,HIGH);
+    }
+
+    buttonPushed = 1;
+
+}
+
 
 
 
@@ -547,12 +627,12 @@ void pLock()
             inChar = client.read();
             message[i] = inChar;
             i++;
+
         }
 
         if(message[0] != '\0')
         {
             onMessage(message);
-            //delay(100);
 
         }
 
@@ -638,6 +718,7 @@ void setup() {
     pinMode(Relay0, OUTPUT);
     pinMode(Relay1, OUTPUT);
     pinMode(LED, OUTPUT);
+    pinMode(buttonPin, INPUT);
 
 
     WiFi.setCredentials("Tornado_guest","fourwordsalluppercase",WPA2);
@@ -646,8 +727,18 @@ void setup() {
 
     while(!Particle.connected)
     {
-        ;
+        delay(1);
     }
+
+
+
+    if((LdeviceID[0] == 0) && (LdeviceID[1] == 0))
+    {
+        pinMode(buttonPin, INPUT);
+        attachInterrupt(buttonPin, switchButton, CHANGE);
+    }
+
+
 
     Serial.begin(9600);
 
@@ -673,7 +764,6 @@ void setup() {
 //main function
 void loop() {
 
-//   delay(300);
 
     if(!client.connected() && !isConnecting)
     {
