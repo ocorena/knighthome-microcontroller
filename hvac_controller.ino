@@ -1,10 +1,16 @@
+#include "EmonLib/EmonLib.h"
+
 #include "application.h"
 
-#include "LiquidCrystal.h"
-//local device ID, characters 1 and 2 are the type of device, the remaining characters are the
 
+
+#include "LiquidCrystal/LiquidCrystal.h"
+
+
+
+//local device ID, characters 1 and 2 are the type of device, the remaining characters are the
 //unique device identifyer
-#define LdeviceID "110001"
+#define LdeviceID  "110001"
 
 SYSTEM_MODE(SEMI_AUTOMATIC);
 
@@ -31,28 +37,52 @@ const unsigned char authenticatorH[] = "110001 authenticate access_token cdaf750
 
 
 
+EnergyMonitor emon1;
+const int voltage = 120;
 
 
-//enable relay
-int EnRelay = D7;
+static unsigned long secondInterval = 1000;
+static unsigned long minuteInterval = 57000;
+static unsigned long prevMinute = 0;
+static unsigned long prevSecond = 0;
+unsigned long now;
+double average = 0.0;
+double sum = 0.0;
+int count = 0;
+int analogPin0 = A5;
 
-int FanRelay = A1;
+
+int interrupttime = 0;
+int temperatureTime = 0;
+int sentTime = 0 ;
+int sumT = 0;
+int countT = 0;
+
+
+//int EnRelay = A6;
+//int FanRelay = A4;
+
+
 
 //AC relay
-int ACRelay = A2;
+int ACRelay = D6;
 
 //heat relay
-int HRelay = A3;
+int HRelay = D7;
+
+
+
 
 int Tmonitor = A0;
+//int LED = D7;
 
-int LED = D7;
 
 
+//red A1, blud A3, yellow A2
 //----
-int HCbutton = D7;
-int TempUpbutton = D7;
-int TempDwnbutton = D7;
+int HCbutton = A2; //yellow
+int TempUpbutton = A1; //red
+int TempDwnbutton = A3; //blue
 //----
 
 int Updated = 0;
@@ -66,7 +96,6 @@ int Updated = 0;
 int Settings[] = {0, 75, 0, 0};
 
 
-
 int resetTime = 0;
 
 //no = 0, yes = 1
@@ -76,12 +105,15 @@ int newAuth = 0;
 
 bool isConnecting = FALSE;
 
+int TemperatureC = 0;
+int TemperatureF = 0;
+
 
 
 void onMessage(char* message) {
 
-    Serial.println("inmessage: ");
-    Serial.println(message);
+    //Serial.println("inmessage: ");
+    //Serial.println(message);
 
     int i = 0;
 
@@ -119,8 +151,8 @@ void onMessage(char* message) {
         message[36] = '\0';
 
         client.print(message);
-        Serial.print("response:\n");
-        Serial.println(message);
+        //Serial.print("response:\n");
+        //Serial.println(message);
         return;
     }
 
@@ -136,8 +168,8 @@ void onMessage(char* message) {
             //false
             if((message[19] == 'f') && (message[20] == 'a') && (message[21] == 'l') && (message[22] == 's') && (message[23] == 'e') && (message[24] == '\n'))
             {
-                digitalWrite(EnRelay,HIGH);
-                digitalWrite(LED,LOW);
+                //digitalWrite(EnRelay,HIGH);
+                //digitalWrite(LED,LOW);
 
                 Settings[0] = 0;
                 return;
@@ -146,8 +178,8 @@ void onMessage(char* message) {
             //true
             else if((message[19] == 't') && (message[20] == 'r') && (message[21] == 'u') && (message[22] == 'e') && (message[23] == '\n'))
             {
-                digitalWrite(EnRelay,LOW);
-                digitalWrite(LED,HIGH);
+                //digitalWrite(EnRelay,LOW);
+                //digitalWrite(LED,HIGH);
 
                 Settings[0] = 1;
                 return;
@@ -190,14 +222,20 @@ void onMessage(char* message) {
             //cool
             if((message[16] == 'c') && (message[17] == 'o') && (message[18] == 'o') && (message[19] == 'l') && (message[20] == '\n'))
             {
-                Settings[2] = 0;
+                if((Updated == 0) /*&& (millis() - interrupttime > 1000)*/)
+                {
+                    Settings[2] = 0;
+                }
                 return;
             }
 
             //heat
             else if((message[16] == 'h') && (message[17] == 'e') && (message[18] == 'a') && (message[19] == 't') && (message[20] == '\n'))
             {
-                Settings[2] = 1;
+                if((Updated == 0) /*&& (millis() - interrupttime > 1000)*/)
+                {
+                    Settings[2] = 1;
+                }
                 return;
             }
 
@@ -209,9 +247,12 @@ void onMessage(char* message) {
                 (message[16] == 'e') && (message[17] == 's') && (message[18] == 'i') && (message[19] == 'r') && (message[20] == 'e') &&
                 (message[21] == 'd') && (message[22] == ' '))
         {
-            Settings[1] = message[23] - 48;
-            Settings[1] *= 10;
-            Settings[1] += (message[24] - 48);
+            if((Updated == 0) /*&& (millis() - interrupttime > 500)*/)
+            {
+                Settings[1] = message[23] - 48;
+                Settings[1] *= 10;
+                Settings[1] += (message[24] - 48);
+            }
             return;
         }
 
@@ -241,7 +282,7 @@ void sendData(char *action, char *state_Name, int state_Type){
     int i = 0;
     int j = 0;
 
-    //state_Type -100 is for the current enable state of outlet 1
+    //state_Type -101 is for the current enable state of the device
     if(state_Type == -101)
     {
         //determine value of enable state
@@ -313,7 +354,7 @@ void sendData(char *action, char *state_Name, int state_Type){
         }
     }
 
-    //state_type 4 is for the currently set temperature
+    //state_type -104 is for the currently set temperature
      else if(state_Type == -104)
     {
         switch(Settings[1] / 10)
@@ -369,7 +410,7 @@ void sendData(char *action, char *state_Name, int state_Type){
 
 
     //a non-negative state_type is the current temperature
-    else if(state_Type > 4)
+    else if(state_Type > 0)
     {
         switch(state_Type / 10)
         {
@@ -455,7 +496,7 @@ void sendData(char *action, char *state_Name, int state_Type){
     i++;
     j = 0;
 
-    while(state_Value[j] != '\0')
+    while((state_Value[j] != '\0') && (state_Value[j] >= '.') && (state_Value[j] <= '9'))
     {
         Lmessage[i] = state_Value[j];
         i++;
@@ -466,11 +507,149 @@ void sendData(char *action, char *state_Name, int state_Type){
     Lmessage[i+1] = '\0';
 
 
-    Serial.print(Lmessage);
+//    Serial.print(Lmessage);
 
     client.print(Lmessage);
 
 }
+
+
+
+void dataSend(char *action, char *state_Name, double state_Type){
+
+
+    char Lmessage[1024];
+    char state_Value[50];
+    int i = 0;
+    int j = 0;
+
+    //power monitor data
+    if(state_Type >= 0)
+    {
+        char temp_Value[10];
+        int temp_Type = state_Type * 100;
+
+        i = 0;
+        while(temp_Type / 1 > 0)
+        {
+
+            switch(temp_Type % 10)
+            {
+                case 0: temp_Value[i] = '0';
+                        break;
+                case 1: temp_Value[i] = '1';
+                        break;
+                case 2: temp_Value[i] = '2';
+                        break;
+                case 3: temp_Value[i] = '3';
+                        break;
+                case 4: temp_Value[i] = '4';
+                        break;
+                case 5: temp_Value[i] = '5';
+                        break;
+                case 6: temp_Value[i] = '6';
+                        break;
+                case 7: temp_Value[i] = '7';
+                        break;
+                case 8: temp_Value[i] = '8';
+                        break;
+                case 9: temp_Value[i] = '9';
+                        break;
+            }
+
+            temp_Type = temp_Type / 10;
+            i++;
+        }
+
+
+        j = 0;
+        i--;
+
+        if(i > 1)
+        {
+            while(i >= -1)
+            {
+                if(i == 1)
+                {
+                    state_Value[j] = '.';
+                    j++;
+                }
+
+                state_Value[j] = temp_Value[i];
+                j++;
+                i--;
+            }
+        }
+        else
+        {
+            state_Value[0] = '0';
+            state_Value[1] = '.';
+
+            if(i == 1)
+            {
+                state_Value[2] = temp_Value[1];
+            }
+            else
+            {
+                state_Value[2] = '0';
+            }
+
+            state_Value[3] = temp_Value[0];
+
+        }
+
+    }
+
+
+
+    //build message to send to server
+    for(i = 0; i < 6; i++)
+    {
+        Lmessage[i] = LdeviceID[i];
+    }
+
+    Lmessage[i] = ' ';
+    i++;
+    j = 0;
+
+    while(action[j] != '\0')
+    {
+        Lmessage[i] = action[j];
+        i++;
+        j++;
+    }
+
+    Lmessage[i] = ' ';
+    i++;
+    j = 0;
+
+
+    while(state_Name[j] != '\0')
+    {
+        Lmessage[i] = state_Name[j];
+        i++;
+        j++;
+    }
+
+    Lmessage[i] = ' ';
+    i++;
+    j = 0;
+
+    while((state_Value[j] != '\0') && (state_Value[j] >= '.') && (state_Value[j] <= '9'))
+    {
+        Lmessage[i] = state_Value[j];
+        i++;
+        j++;
+    }
+
+    Lmessage[i] = '\n';
+    Lmessage[i+1] = '\0';
+
+    client.print(Lmessage);
+//    Serial.print("sent: ");
+//    Serial.println(Lmessage);
+}
+
 
 
 
@@ -608,30 +787,48 @@ void allDataSend ()
 
 void HCchange ()
 {
-    if(Settings[2] == 0)
+    if(millis() - interrupttime > 500)
     {
-        Settings[2] = 1;
-    }
-    else if(Settings[2] == 1)
-    {
-        Settings[2] = 0;
-    }
+        Updated = 1;
 
-    Updated = 1;
+        if(Settings[2] == 0)
+        {
+            Settings[2] = 1;
+        }
+        else if(Settings[2] == 1)
+        {
+            Settings[2] = 0;
+        }
+
+        interrupttime = millis();
+    }
 }
 
 void TemperatureUp ()
 {
-    Settings[1] += 1;
+    if(millis() - interrupttime > 300)
+    {
+        Updated = 1;
 
-    Updated = 1;
+        Settings[1] += 1;
+
+        interrupttime = millis();
+
+    }
+
 }
 
 void TemperatureDown ()
 {
-    Settings[1] -= 1;
+    if(millis() - interrupttime > 300)
+    {
+        Updated = 1;
 
-    Updated = 1;
+        Settings[1] -= 1;
+
+        interrupttime = millis();
+
+    }
 }
 
 
@@ -684,33 +881,37 @@ void setup() {
         delay(1);
     }
 
-    pinMode(HCbutton,INPUT);
-    pinMode(TempUpbutton,INPUT);
-    pinMode(TempDwnbutton,INPUT);
+//setup for the interrupts for button presses
+//uncomment when butons are added
+    pinMode(HCbutton,INPUT_PULLUP);
+    pinMode(TempUpbutton,INPUT_PULLUP);
+    pinMode(TempDwnbutton,INPUT_PULLUP);
 
 
-    attachInterrupt(HCbutton, HCchange, CHANGE);
-    attachInterrupt(TempUpbutton, TemperatureUp, CHANGE);
-    attachInterrupt(TempDwnbutton, TemperatureDown, CHANGE);
+    //attachInterrupt(HCbutton, HCchange, FALLING);
+    //attachInterrupt(TempUpbutton, TemperatureUp, FALLING);
+    //attachInterrupt(TempDwnbutton, TemperatureDown, FALLING);
 
 
     //16 columns, 2 rows
-    lcd.begin(16,2);
+    //lcd.begin(16,2);
 
 
     Serial.begin(9600);
 
     connect();
 
-    pinMode(EnRelay,OUTPUT);
+    //pinMode(EnRelay,OUTPUT);
 
-    pinMode(FanRelay,OUTPUT);
+    //pinMode(FanRelay,OUTPUT);
 
     //AC relay
     pinMode(ACRelay,OUTPUT);
 
     //heat relay
     pinMode(HRelay,OUTPUT);
+
+    emon1.current(analogPin0,19.23 * 1.45);
 }
 
 
@@ -721,7 +922,7 @@ void setup() {
 void loop() {
 
 
-   delay(300);
+
 
     if(!client.connected() && !isConnecting)
     {
@@ -734,6 +935,8 @@ void loop() {
     }
 
 
+//---------
+
 
     if((millis() - resetTime) > 31000)
     {
@@ -744,6 +947,7 @@ void loop() {
     }
 
 
+//----------
 
 
     if(isAuthenticated == 0)
@@ -755,7 +959,7 @@ void loop() {
         newAuth = 1;
     }
 
-
+//----------
 
     int s = 0;
 
@@ -767,7 +971,7 @@ void loop() {
 
     char message[1024] = "";
 
-    if(client.available() && (Updated == 0))
+    if(client.available())
     {
 
         inChar = '0';
@@ -786,7 +990,7 @@ void loop() {
             if(message[0] != '\0')
             {
                 onMessage(message);
-                delay(100);
+                delay(50);
 
             }
         }
@@ -813,7 +1017,7 @@ void loop() {
                         {
 
                             onMessage(message);
-                            delay(100);
+                            delay(50);
 
                         }
 
@@ -842,7 +1046,7 @@ void loop() {
                     {
 
                         onMessage(message);
-                        delay(100);
+                        delay(50);
 
                     }
                 }
@@ -854,41 +1058,110 @@ void loop() {
         resetTime = millis();
     }
 
+//-------------------------------
 
+    if(digitalRead(A1) == 0)
+    {
+        //if(millis() - interrupttime > 300)
+        //{
+            Updated = 1;
+
+            Settings[1] += 1;
+
+            interrupttime = millis();
+        //}
+
+    }
+    else if(digitalRead(A2) == 0)
+    {
+        //if(millis() - interrupttime > 300)
+        //{
+            Updated = 1;
+
+            if(Settings[2] == 0)
+            {
+                Settings[2] = 1;
+            }
+            else if(Settings[2] == 1)
+            {
+                Settings[2] = 0;
+            }
+
+            interrupttime = millis();
+        //}
+
+    }
+    else if(digitalRead(A3) == 0)
+    {
+        //if(millis() - interrupttime > 300)
+        //{
+            Updated = 1;
+
+            Settings[1] -= 1;
+
+            interrupttime = millis();
+
+        //}
+
+    }
+
+
+//----------------------------------
 
     //if a button was pressed send the updated state
     if(Updated == 1)
     {
         allDataSend();
 
+        Serial.println("updated");
+
         Updated = 0;
+        delay(50);
+        client.flush();
+    }
+
+
+//---------------
+
+    if((millis() - temperatureTime < 30000) && (millis() > 5000))
+    {
+        TemperatureC = (100 * (analogRead(Tmonitor) * 0.0008)) - 50;
+        sumT = sumT + (TemperatureC * 1.8) + 32;
+        countT += 1;
+    }
+    else if(millis() - temperatureTime > 30000)
+    {
+        //countT += 1;
+        TemperatureF = (sumT / countT);
+        temperatureTime = millis();
+        sumT = 0;
+        countT = 0;
+        sendData("set","tempCurrent",TemperatureF);
     }
 
 
 
+//---------------
 
 
-    int TemperatureC = (100 * (analogRead(Tmonitor) * 0.0008)) - 50;
-    int TemperatureF = (TemperatureC * 1.8) + 32;
 
-
-    if(Settings[0] == 0)
+    if((Settings[0] == 0) && (Updated == 0))
     {
-        digitalWrite(EnRelay,HIGH);
+        //digitalWrite(EnRelay,HIGH);
         digitalWrite(ACRelay,HIGH);
         digitalWrite(HRelay,HIGH);
-        digitalWrite(FanRelay,HIGH);
+        //digitalWrite(FanRelay,HIGH);
     }
-    else
+    else if(Updated == 0)
     {
-        digitalWrite(EnRelay,LOW);
+        //digitalWrite(EnRelay,LOW);
 
         //fan off
         if(Settings[3] == 0)
         {
             digitalWrite(ACRelay,HIGH);
             digitalWrite(HRelay,HIGH);
-            digitalWrite(FanRelay,HIGH);
+            //digitalWrite(FanRelay,HIGH);
         }
         else
         {
@@ -902,13 +1175,13 @@ void loop() {
 
                     if(TemperatureF < Settings[1])
                     {
-                        digitalWrite(FanRelay,HIGH);
+                        //digitalWrite(FanRelay,HIGH);
                         digitalWrite(ACRelay,HIGH);
 
                     }
                     else if(TemperatureF > Settings[1])
                     {
-                        digitalWrite(FanRelay,LOW);
+                        //digitalWrite(FanRelay,LOW);
                         digitalWrite(ACRelay,LOW);
 
                     }
@@ -922,13 +1195,13 @@ void loop() {
 
                     if(TemperatureF < Settings[1])
                     {
-                        digitalWrite(FanRelay,LOW);
+                        //digitalWrite(FanRelay,LOW);
                         digitalWrite(HRelay,LOW);
 
                     }
                     else if(TemperatureF > Settings[1])
                     {
-                        digitalWrite(FanRelay,HIGH);
+                        //digitalWrite(FanRelay,HIGH);
                         digitalWrite(HRelay,HIGH);
 
                     }
@@ -940,7 +1213,7 @@ void loop() {
             //fan on
             else if(Settings[3] == 1)
             {
-                digitalWrite(FanRelay,LOW);
+                //digitalWrite(FanRelay,LOW);
                 //cool
                 if(Settings[2] == 0)
                 {
@@ -960,116 +1233,17 @@ void loop() {
 
     }
 
+//----------------------
 
 
 
 
-
-//----
-//old working code here until new code is proven to work
-/*
-    if(Settings[0] == 0)
+    if((s != 1) && (Updated == 0)/* && (millis() - interrupttime > 500)*/)
     {
-        digitalWrite(EnRelay,HIGH);
-        digitalWrite(ACRelay,HIGH);
-        digitalWrite(HRelay,HIGH);
-        digitalWrite(FanRelay,HIGH);
-    }
-    else if(Settings[0] == 1)
-    {
-        digitalWrite(EnRelay,LOW);
-    }
+        lcd.begin(16,2);
+        //display
+        lcd.setCursor(0,0);
 
-
-
-
-    //cool
-    if((Settings[2] == 0) && (Settings[0] == 1))
-    {
-        digitalWrite(ACRelay,LOW);
-        digitalWrite(HRelay,HIGH);
-    }
-    //heat
-    else if((Settings[2] == 1) && (Settings[0] == 1))
-    {
-        digitalWrite(ACRelay,HIGH);
-        digitalWrite(HRelay,LOW);
-    }
-
-
-
-
-
-    if((Settings[3] == 2) && (Settings[0] == 1))
-    {
-        //cool
-        if(Settings[2] == 0)
-        {
-
-            if(TemperatureF > Settings[1])
-            {
-                //turn AC on
-                digitalWrite(FanRelay,LOW);
-             //   Serial.println("turn ac on");
-            }
-            else
-            {
-
-                //turn AC off
-                digitalWrite(FanRelay,HIGH);
-                digitalWrite(ACRelay,HIGH);
-             //   Serial.println("turn ac off");
-
-            }
-
-        }
-
-        //heat
-        else
-        {
-
-            if(TemperatureF < Settings[1])
-            {
-                //turn heat on
-                digitalWrite(FanRelay,LOW);
-              //  Serial.println("turn heat on");
-            }
-            else
-            {
-
-                //turn heat off
-                digitalWrite(FanRelay,HIGH);
-                digitalWrite(HRelay,HIGH);
-             //   Serial.println("turn heat off");
-
-            }
-
-        }
-
-    }
-    else if((Settings[3] < 2) && (Settings[0] == 1))
-    {
-        //fan off
-        if(Settings[3] == 0)
-        {
-            digitalWrite(FanRelay,HIGH);
-        }
-
-        //fan on
-        else if(Settings[3] == 1)
-        {
-            digitalWrite(FanRelay,LOW);
-        }
-    }
-*/
-//------
-
-
-    //display
-    lcd.setCursor(0,0);
-
-    if(s != 1)
-    {
         if(Settings[0] == 1)
         {
             if(Settings[2] == 0)
@@ -1133,6 +1307,7 @@ void loop() {
             lcd.setCursor(14,1);
         }
 
+
         lcd.print(TemperatureF);
 
 
@@ -1140,8 +1315,44 @@ void loop() {
         delay(50);
 
 
-        sendData("set","tempCurrent",TemperatureF);
+        for(i = 0; i < 4; i++)
+        {
+            Serial.print(Settings[i]);
+            Serial.print(' ');
+        }
+        Serial.print(TemperatureF);
+        Serial.print('\n');
+
+        
 
     }
+
+
+
+//----------------------
+
+    unsigned long currentMillis = millis();
+
+
+        double Irms = emon1.calcIrms(1480);  // Calculate Irms
+        //Serial.println(Irms);
+        double watts = (Irms*voltage);
+        sum = sum + watts;
+        count = count + 1;
+        if ((unsigned long)(currentMillis - prevMinute) < minuteInterval){
+        return;
+        }
+        else{
+            average = sum/count;
+            Serial.print(" =");
+            Serial.println(average);
+            dataSend("stat", "power_usage", average);
+            average = 0.0;
+            sum = 0.0;
+            count = 0;
+            prevMinute = currentMillis;
+        }
+        prevSecond = currentMillis;
+
 
 }

@@ -1,6 +1,6 @@
 #include "application.h"
 
-#include "EmonLib.h"
+#include "EmonLib/EmonLib.h"
 
 
 SYSTEM_MODE(SEMI_AUTOMATIC);
@@ -9,7 +9,7 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 
 //local device ID, characters 1 and 2 are the type of device, the remaining characters are the
 //unique device identifyer
-char LdeviceID[] = "000001";
+char LdeviceID[] = "010001";
 
 //00 wall switch
 //01 wall outlet
@@ -46,13 +46,13 @@ int Relay1 = D3;
 int LED = D7;
 int analogPin0 = A0;
 
-int buttonPin = D7;
+int buttonPin = D4;
 
 
 
 //time until reconnect
 int resetTime = 0;
-
+int buttonTime = 0;
 
 EnergyMonitor emon1;
 const int voltage = 120;
@@ -136,17 +136,27 @@ void onMessage(char* message) {
 
             if((message[19] == 'f') && (message[20] == 'a') && (message[21] == 'l') && (message[22] == 's') && (message[23] == 'e') && (message[24] == '\n'))
             {
-                digitalWrite(Relay0,HIGH);
+                if((buttonPushed == 0))
+                {
+                    digitalWrite(Relay0,HIGH);
 
-                Rstate = 0;
+                    Rstate = 0;
+
+                    buttonTime = millis();
+                }
 
                 return;
             }
             else if((message[19] == 't') && (message[20] == 'r') && (message[21] == 'u') && (message[22] == 'e') && (message[23] == '\n'))
             {
-                digitalWrite(Relay0,LOW);
+                if((buttonPushed == 0))
+                {
+                    digitalWrite(Relay0,LOW);
 
-                Rstate = 1;
+                    Rstate = 1;
+
+                    buttonTime = millis();
+                }
 
                 return;
             }
@@ -194,21 +204,23 @@ void dataSend(char *action, char *state_Name, double state_Type){
 
     //send wall switch state
     if(state_Type == -100)
-    {
+    {Serial.println("entered");
         if(Rstate == 0)
-        {
-            state_Value[0] == 'f';
-            state_Value[1] == 'a';
-            state_Value[2] == 'l';
-            state_Value[3] == 's';
-            state_Value[4] == 'e';
+        {Serial.println("zero");
+            state_Value[0] = 'f';
+            state_Value[1] = 'a';
+            state_Value[2] = 'l';
+            state_Value[3] = 's';
+            state_Value[4] = 'e';
+            state_Value[5] = '\0';
         }
         else if(Rstate == 1)
-        {
-            state_Value[0] == 't';
-            state_Value[0] == 'r';
-            state_Value[0] == 'u';
-            state_Value[0] == 'e';
+        {Serial.println("one");
+            state_Value[0] = 't';
+            state_Value[1] = 'r';
+            state_Value[2] = 'u';
+            state_Value[3] = 'e';
+            state_Value[4] = '\0';
         }
     }
 
@@ -326,7 +338,7 @@ void dataSend(char *action, char *state_Name, double state_Type){
     i++;
     j = 0;
 
-    while(state_Value[j] != '\0')
+    while((state_Value[j] != '\0') && (state_Value[j] >= '.') && (state_Value[j] <= '9'))
     {
         Lmessage[i] = state_Value[j];
         i++;
@@ -493,7 +505,7 @@ void wallSwitch()
 
     char inChar = '0';
 
-    char message[1024] = "";
+    char message[1024] = "\0";
 
     if(client.available() && (buttonPushed == 0))
     {
@@ -544,9 +556,30 @@ void wallSwitch()
     }
 
 
+    if((digitalRead(buttonPin) == 1) && (millis() - buttonTime > 400))
+    {
+        if(Rstate == 0)
+        {
+            Rstate = 1;
+            digitalWrite(Relay0,LOW);
+        }
+        else if(Rstate == 1)
+        {
+            Rstate = 0;
+            digitalWrite(Relay0,HIGH);
+        }
+
+        buttonPushed = 1;
+
+        buttonTime = millis();
+    }
+
+
+
     if(buttonPushed == 1)
     {
         dataSend("set","enabled",-100);
+
         buttonPushed = 0;
 
     }
@@ -582,18 +615,23 @@ void wallSwitch()
 
 void switchButton()
 {
-    if(Rstate == 0)
+    if(millis() - buttonTime > 1000)
     {
-        Rstate == 1;
-        digitalWrite(Relay0,LOW);
-    }
-    else if(Rstate == 1)
-    {
-        Rstate == 0;
-        digitalWrite(Relay0,HIGH);
-    }
+        if(Rstate == 0)
+        {
+            Rstate = 1;
+            digitalWrite(Relay0,LOW);
+        }
+        else if(Rstate == 1)
+        {
+            Rstate = 0;
+            digitalWrite(Relay0,HIGH);
+        }
 
-    buttonPushed = 1;
+        buttonPushed = 1;
+
+        buttonTime = millis();
+    }
 
 }
 
@@ -620,7 +658,7 @@ void pLock()
 
     char message[1024] = "";
 
-    if(client.available())
+    if(client.available() && (millis() > 1000))
     {
         while(inChar != '\n')
         {
@@ -663,16 +701,6 @@ void pLock()
 
         client.flush();
         resetTime = millis();
-    }
-
-//                      --------------------------------
-    if(!WiFi.ready() && ((millis() - prevSecond) > 2000))
-    {
-        digitalWrite(LED,HIGH);
-        delay(500);
-        digitalWrite(LED,LOW);
-
-        prevSecond = millis();
     }
 
 }
@@ -718,7 +746,6 @@ void setup() {
     pinMode(Relay0, OUTPUT);
     pinMode(Relay1, OUTPUT);
     pinMode(LED, OUTPUT);
-    pinMode(buttonPin, INPUT);
 
 
     WiFi.setCredentials("Tornado_guest","fourwordsalluppercase",WPA2);
@@ -732,12 +759,9 @@ void setup() {
 
 
 
-    if((LdeviceID[0] == 0) && (LdeviceID[1] == 0))
-    {
-        pinMode(buttonPin, INPUT);
-        attachInterrupt(buttonPin, switchButton, CHANGE);
-    }
-
+    pinMode(buttonPin, INPUT_PULLUP);/*
+    attachInterrupt(buttonPin, switchButton, FALLING);
+    */
 
 
     Serial.begin(9600);
@@ -751,6 +775,12 @@ void setup() {
 
 
     emon1.current(analogPin0,19.23 * 1.45);
+
+
+    Rstate = 0;
+    Rstate2 = 0;
+
+    buttonTime = millis();
 
 }
 
@@ -768,10 +798,7 @@ void loop() {
     if(!client.connected() && !isConnecting)
     {
         Serial.println("disonnected---");
-        if(LdeviceID[0] == 1)
-        {
-            digitalWrite(Relay0,HIGH);
-        }
+
         isAuthenticated = 0;
         delay(500);
 
@@ -787,6 +814,7 @@ void loop() {
         {
             reconnect();
         }
+
     }
 
 
